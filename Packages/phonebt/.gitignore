@@ -1,0 +1,10 @@
+# Modified from the original PhoneBT project by Ravindu Kumarasiri in 2026.
+
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+Package.resolved
