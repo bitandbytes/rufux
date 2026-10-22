@@ -27,20 +27,15 @@ struct LiveHistoryMessage {
     let text: String
 }
 
-struct AudioDumpPaths {
-    let inputURL: URL
-    let outputURL: URL
-}
-
 enum AudioDumpPathResolver {
-    static func paths(beside resultURL: URL, in outputDirectory: URL? = nil) -> AudioDumpPaths {
+    static func paths(beside resultURL: URL, in outputDirectory: URL? = nil) -> PCMOutputFiles {
         let directory = outputDirectory ?? resultURL.deletingLastPathComponent()
         let resultStem = resultURL.deletingPathExtension().lastPathComponent
         let resultSuffix = "-appointment-result"
         let callStem = resultStem.hasSuffix(resultSuffix)
             ? String(resultStem.dropLast(resultSuffix.count))
             : resultStem
-        return AudioDumpPaths(
+        return PCMOutputFiles(
             inputURL: directory.appendingPathComponent("\(callStem)-agent-input.pcm"),
             outputURL: directory.appendingPathComponent("\(callStem)-agent-output.pcm")
         )
@@ -260,7 +255,9 @@ public final class AgentSession: @unchecked Sendable {
     public let eventStream: AgentSessionEventStream
     private let logger = PhoneBTLogger(category: .agent)
     private let stateQueue = DispatchQueue(label: "com.phonebt.realtime.session")
-    private let audioDumper: AudioDumper?
+    private let pcmOutputDirectory: URL?
+    private var audioDumper: AudioDumper?
+    private var hasAttemptedPCMSetup = false
     private static let maximumBufferedAudioBytes = 5 * 24_000 * MemoryLayout<Int16>.size
     private static let maximumResumeTranscriptCharacters = 12_000
     private static let maximumReconnectAttempts = 3
@@ -315,15 +312,8 @@ public final class AgentSession: @unchecked Sendable {
         self.device = device
         self.eventStream = eventStream
         self.onDiagnostic = onDiagnostic
-        if let pcmDirectory = outputConfiguration.resolvedPCMOutputDirectory {
-            self.audioDumper = AudioDumper.create(
-                besideResultFile: outputConfiguration.resultURL,
-                in: pcmDirectory,
-                logger: logger
-            )
-        } else {
-            self.audioDumper = nil
-        }
+        self.pcmOutputDirectory = outputConfiguration.resolvedPCMOutputDirectory
+        self.audioDumper = nil
     }
 
     /// Connects and configures the model after the outgoing call becomes active.
@@ -332,6 +322,7 @@ public final class AgentSession: @unchecked Sendable {
             guard let self, self.webSocket == nil, !self.isClosed else { return }
             guard let url = URL(string: "wss://api.openai.com/v1/live/sessions") else { return }
 
+            self.configureAudioDumperIfNeeded()
             self.emit(.activity(.preparing))
             var request = URLRequest(url: url)
             request.setValue("Bearer \(self.apiKey)", forHTTPHeaderField: "Authorization")
@@ -341,6 +332,32 @@ public final class AgentSession: @unchecked Sendable {
             socket.resume()
             self.sendSessionStart()
             self.receiveTask = Task { [weak self] in await self?.receiveLoop() }
+        }
+    }
+
+    private func configureAudioDumperIfNeeded() {
+        guard !hasAttemptedPCMSetup else { return }
+        hasAttemptedPCMSetup = true
+        guard let pcmOutputDirectory else { return }
+
+        let files = AudioDumpPathResolver.paths(
+            beside: resultURL,
+            in: pcmOutputDirectory
+        )
+        do {
+            audioDumper = try AudioDumper.create(
+                files: files,
+                logger: logger,
+                onFailure: { [eventStream, logger] message in
+                    logger.error("GPT-Live audio dump stopped: \(message)")
+                    eventStream.emit(.pcmOutputFailed(message))
+                }
+            )
+            emit(.pcmOutputReady(files))
+        } catch {
+            let message = error.localizedDescription
+            logger.error("Could not enable GPT-Live audio dump: \(message)")
+            emit(.pcmOutputFailed(message))
         }
     }
 
@@ -954,37 +971,41 @@ public final class AgentSession: @unchecked Sendable {
 /// Files are created beside the input configuration and result files.
 private final class AudioDumper: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.phonebt.realtime.audio-dump")
+    private let files: PCMOutputFiles
     private let inputHandle: FileHandle
     private let outputHandle: FileHandle
+    private let onFailure: @Sendable (String) -> Void
     private var isClosed = false
 
     static func create(
-        besideResultFile resultURL: URL,
-        in outputDirectory: URL,
-        logger: PhoneBTLogger
-    ) -> AudioDumper? {
+        files: PCMOutputFiles,
+        logger: PhoneBTLogger,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) throws -> AudioDumper {
         do {
-            let paths = AudioDumpPathResolver.paths(beside: resultURL, in: outputDirectory)
-            try Data().write(to: paths.inputURL, options: .atomic)
-            try Data().write(to: paths.outputURL, options: .atomic)
+            try Data().write(to: files.inputURL, options: .atomic)
+            try Data().write(to: files.outputURL, options: .atomic)
 
-            let dumper = try AudioDumper(
-                inputURL: paths.inputURL,
-                outputURL: paths.outputURL
-            )
+            let dumper = try AudioDumper(files: files, onFailure: onFailure)
             logger.info(
-                "GPT-Live audio dump enabled: \(paths.inputURL.path), \(paths.outputURL.path)"
+                "GPT-Live audio dump enabled: \(files.inputURL.path), \(files.outputURL.path)"
             )
             return dumper
         } catch {
-            logger.error("Could not enable GPT-Live audio dump: \(error.localizedDescription)")
-            return nil
+            try? FileManager.default.removeItem(at: files.inputURL)
+            try? FileManager.default.removeItem(at: files.outputURL)
+            throw error
         }
     }
 
-    private init(inputURL: URL, outputURL: URL) throws {
-        inputHandle = try FileHandle(forWritingTo: inputURL)
-        outputHandle = try FileHandle(forWritingTo: outputURL)
+    private init(
+        files: PCMOutputFiles,
+        onFailure: @escaping @Sendable (String) -> Void
+    ) throws {
+        self.files = files
+        self.onFailure = onFailure
+        inputHandle = try FileHandle(forWritingTo: files.inputURL)
+        outputHandle = try FileHandle(forWritingTo: files.outputURL)
     }
 
     func appendInput(_ data: Data) {
@@ -1015,6 +1036,9 @@ private final class AudioDumper: @unchecked Sendable {
                 self.isClosed = true
                 try? self.inputHandle.close()
                 try? self.outputHandle.close()
+                try? FileManager.default.removeItem(at: self.files.inputURL)
+                try? FileManager.default.removeItem(at: self.files.outputURL)
+                self.onFailure(error.localizedDescription)
             }
         }
     }

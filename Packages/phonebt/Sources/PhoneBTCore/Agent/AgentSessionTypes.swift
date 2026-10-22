@@ -34,9 +34,21 @@ public enum AgentSessionEvent: Equatable, Sendable {
     case resultRecorded(AppointmentResult)
     case resultWritten(AppointmentResult, URL)
     case resultWriteFailed(String)
+    case pcmOutputReady(PCMOutputFiles)
+    case pcmOutputFailed(String)
     case reconnecting(attempt: Int, maximumAttempts: Int, reason: String)
     case failure(String)
     case closed
+}
+
+public struct PCMOutputFiles: Equatable, Sendable {
+    public let inputURL: URL
+    public let outputURL: URL
+
+    public init(inputURL: URL, outputURL: URL) {
+        self.inputURL = inputURL
+        self.outputURL = outputURL
+    }
 }
 
 public final class AgentSessionEventStream: @unchecked Sendable {

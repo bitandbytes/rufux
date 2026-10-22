@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Rufux glass app icon</title>
+  <desc id="desc">The approved fox and receiver design with subtle orange glass shading, a soft reflection, and fine rim highlights on the fox. Editable pure vector artwork. No platform corner mask.</desc>
+  <defs>
+    <linearGradient id="fox-glass" x1="300" y1="220" x2="690" y2="810" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFAC76"/>
+      <stop offset="0.34" stop-color="#FF8B4E"/>
+      <stop offset="0.7" stop-color="#F9773D"/>
+      <stop offset="1" stop-color="#E65C34"/>
+    </linearGradient>
+    <radialGradient id="soft-reflection" cx="290" cy="245" r="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF8EC" stop-opacity="0.29"/>
+      <stop offset="0.5" stop-color="#FFF8EC" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#FFF8EC" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass-rim" x1="265" y1="230" x2="730" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF5DC" stop-opacity="0.86"/>
+      <stop offset="0.36" stop-color="#FFFFFF" stop-opacity="0.25"/>
+      <stop offset="0.65" stop-color="#FFE8C8" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#FFDFBB" stop-opacity="0.42"/>
+    </linearGradient>
+    <linearGradient id="left-glint" x1="266" y1="240" x2="325" y2="615" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.62"/>
+      <stop offset="0.5" stop-color="#FFF8E9" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFF8E9" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lower-reflection" x1="650" y1="663" x2="510" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE3BC" stop-opacity="0"/>
+      <stop offset="1" stop-color="#FFE3BC" stop-opacity="0.29"/>
+    </linearGradient>
+    <clipPath id="fox-boundary"><path d="M 512 354 C 470 354 432 366 402 386 L 280 226 C 269 212 248 217 246 235 L 222 466 C 210 570 267 658 367 724 L 481 800 Q 512 821 543 800 L 657 724 C 757 658 814 570 802 466 L 778 235 C 776 217 755 212 744 226 L 622 386 C 592 366 554 354 512 354 Z"/></clipPath>
+  </defs>
+  <g id="background" inkscape:groupmode="layer" inkscape:label="Background"><path fill="#222331" d="M 0 0 H 1024 V 1024 H 0 Z"/></g>
+  <g id="01-fox" inkscape:groupmode="layer" inkscape:label="01-Fox-glass">
+    <path fill="url(#fox-glass)" d="M 512 354 C 470 354 432 366 402 386 L 280 226 C 269 212 248 217 246 235 L 222 466 C 210 570 267 658 367 724 L 481 800 Q 512 821 543 800 L 657 724 C 757 658 814 570 802 466 L 778 235 C 776 217 755 212 744 226 L 622 386 C 592 366 554 354 512 354 Z"/>
+    <path fill="url(#soft-reflection)" d="M 512 354 C 470 354 432 366 402 386 L 280 226 C 269 212 248 217 246 235 L 222 466 C 210 570 267 658 367 724 L 481 800 Q 512 821 543 800 L 657 724 C 757 658 814 570 802 466 L 778 235 C 776 217 755 212 744 226 L 622 386 C 592 366 554 354 512 354 Z"/>
+    <g clip-path="url(#fox-boundary)" fill="none">
+      <path stroke="url(#glass-rim)" stroke-width="7" stroke-linejoin="round" d="M 512 354 C 470 354 432 366 402 386 L 280 226 C 269 212 248 217 246 235 L 222 466 C 210 570 267 658 367 724 L 481 800 Q 512 821 543 800 L 657 724 C 757 658 814 570 802 466 L 778 235 C 776 217 755 212 744 226 L 622 386 C 592 366 554 354 512 354 Z"/>
+      <path stroke="url(#left-glint)" stroke-width="5" stroke-linecap="round" d="M 269 248 L 246 469 C 238 530 263 581 302 621"/>
+      <path stroke="url(#lower-reflection)" stroke-width="6" stroke-linecap="round" d="M 650 714 L 537 788 Q 512 804 487 788 L 421 744"/>
+    </g>
+  </g>
+  <g id="02-receiver" inkscape:groupmode="layer" inkscape:label="02-Receiver">
+    <path fill="#FFF8EE" d="M 320 492 C 307 482 289 488 285 504 L 269 552 C 263 571 270 592 285 608 C 347 674 424 720 512 720 C 600 720 677 674 739 608 C 754 592 761 571 755 552 L 739 504 C 735 488 717 482 704 492 L 655 526 C 640 537 637 554 646 570 L 658 594 C 617 625 568 642 512 642 C 456 642 407 625 366 594 L 378 570 C 387 554 384 537 369 526 Z"/>
+  </g>
+  <g id="03-nose" inkscape:groupmode="layer" inkscape:label="03-Nose">
+    <path fill="#222331" d="M 486 646 H 538 Q 554 646 544 659 L 524 682 Q 512 694 500 682 L 480 659 Q 470 646 486 646 Z"/>
+  </g>
+</svg>

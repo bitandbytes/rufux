@@ -116,10 +116,10 @@ final class CallerEditorStore {
             ))
         }
 
-        let phoneNumber = trimmed(telephoneNumber)
+        let phoneNumber = PhoneNumberValidator.normalized(telephoneNumber)
         if phoneNumber.isEmpty {
             issues.append(CallerValidationIssue(field: .telephoneNumber, message: "Enter a telephone number."))
-        } else if !Self.isValidTelephoneNumber(phoneNumber) {
+        } else if !PhoneNumberValidator.isValid(phoneNumber) {
             issues.append(CallerValidationIssue(
                 field: .telephoneNumber,
                 message: "Use a valid telephone number containing at least five digits."
@@ -249,12 +249,6 @@ final class CallerEditorStore {
 
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         return try JSONDecoder().decode(InputConfiguration.self, from: data)
-    }
-
-    nonisolated private static func isValidTelephoneNumber(_ value: String) -> Bool {
-        let digits = value.filter(\.isNumber)
-        let allowedCharacters = CharacterSet(charactersIn: "+-(). ").union(.decimalDigits)
-        return digits.count >= 5 && value.unicodeScalars.allSatisfy(allowedCharacters.contains)
     }
 
     nonisolated private static func actionableMessage(for error: Error) -> String {

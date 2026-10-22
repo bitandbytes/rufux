@@ -94,6 +94,10 @@ final class DeviceSelectionModel {
         }
     }
 
+    func disconnectAudioDevice() {
+        selectAudioDevice(uid: nil)
+    }
+
     func dismissError() {
         operationError = nil
     }
@@ -152,7 +156,8 @@ struct DeviceSelectionView: View {
                 devices: model.state.audioDevices,
                 selection: model.state.audioSelection,
                 canChangeDevices: model.state.canChangeDevices,
-                onSelect: model.selectAudioDevice
+                onSelect: model.selectAudioDevice,
+                onDisconnect: model.disconnectAudioDevice
             )
             DeviceReadinessFooter(
                 issues: model.state.readinessIssues,
@@ -216,19 +221,13 @@ private struct HFPDeviceSection: View {
                         detail: "Pair a phone in System Settings, then refresh this list."
                     )
                 } else {
-                    ForEach(devices) { device in
-                        HFPDeviceRow(
-                            name: device.name,
-                            address: device.address,
-                            connection: connection,
-                            canChangeDevices: canChangeDevices,
-                            onConnect: { onConnect(device.address) },
-                            onDisconnect: onDisconnect
-                        )
-                        if device.id != devices.last?.id {
-                            Divider()
-                        }
-                    }
+                    HFPDeviceRow(
+                        devices: devices,
+                        connection: connection,
+                        canChangeDevices: canChangeDevices,
+                        onConnect: onConnect,
+                        onDisconnect: onDisconnect
+                    )
                 }
             }
         } label: {
@@ -238,11 +237,10 @@ private struct HFPDeviceSection: View {
 }
 
 private struct HFPDeviceRow: View {
-    let name: String
-    let address: String
+    let devices: [HFPDeviceOption]
     let connection: HFPConnectionStatus
     let canChangeDevices: Bool
-    let onConnect: () -> Void
+    let onConnect: (String) -> Void
     let onDisconnect: () -> Void
 
     var body: some View {
@@ -251,12 +249,19 @@ private struct HFPDeviceRow: View {
                 .font(.title2)
                 .foregroundStyle(isConnected ? Color.green : Color.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text(displayAddress)
-                    .font(.caption)
-                    .monospaced()
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                if let displayedDevice {
+                    Text(displayedDevice.name)
+                    Text(displayAddress(displayedDevice.address))
+                        .font(.caption)
+                        .monospaced()
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    Text("Choose a phone")
+                    Text("No HFP phone connected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             if isConnecting {
@@ -265,11 +270,36 @@ private struct HFPDeviceRow: View {
                 Text("Connecting…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if isConnected {
+            }
+            if devices.count > 1 {
+                Menu {
+                    ForEach(devices) { device in
+                        Button {
+                            onConnect(device.address)
+                        } label: {
+                            if connection.connectedAddress == device.address {
+                                Label {
+                                    Text(device.name)
+                                } icon: {
+                                    Image(systemName: "checkmark")
+                                }
+                            } else {
+                                Text(device.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Choose", systemImage: "chevron.down")
+                }
+                .disabled(!canChangeDevices)
+            } else if let device = devices.first, !isConnected, !isConnecting {
+                Button("Connect") {
+                    onConnect(device.address)
+                }
+                .disabled(!canChangeDevices)
+            }
+            if isConnected {
                 Button("Disconnect", role: .destructive, action: onDisconnect)
-                    .disabled(!canChangeDevices)
-            } else {
-                Button("Connect", action: onConnect)
                     .disabled(!canChangeDevices)
             }
         }
@@ -277,18 +307,26 @@ private struct HFPDeviceRow: View {
     }
 
     private var isConnected: Bool {
-        connection.connectedAddress == address
+        connection.connectedAddress != nil
     }
 
-    private var displayAddress: String {
+    private var activeDevice: HFPDeviceOption? {
+        guard let address = connection.activeAddress else { return nil }
+        return devices.first { $0.address == address }
+    }
+
+    private var displayedDevice: HFPDeviceOption? {
+        activeDevice ?? (devices.count == 1 ? devices.first : nil)
+    }
+
+    private func displayAddress(_ address: String) -> String {
         address
             .replacingOccurrences(of: "-", with: ":")
             .uppercased()
     }
 
     private var isConnecting: Bool {
-        guard case .connecting(let connectingAddress) = connection else { return false }
-        return connectingAddress == address
+        connection.isConnecting
     }
 }
 
@@ -297,6 +335,7 @@ private struct AudioDeviceSection: View {
     let selection: AudioSelectionStatus
     let canChangeDevices: Bool
     let onSelect: (String?) -> Void
+    let onDisconnect: () -> Void
 
     var body: some View {
         GroupBox {
@@ -318,17 +357,13 @@ private struct AudioDeviceSection: View {
                         detail: "Connect an interface that provides both audio input and output."
                     )
                 } else {
-                    ForEach(devices) { device in
-                        AudioDeviceRow(
-                            name: device.name,
-                            isSelected: selection.selectedUID == device.uid,
-                            canChangeDevices: canChangeDevices,
-                            onSelect: { onSelect(device.uid) }
-                        )
-                        if device.id != devices.last?.id {
-                            Divider()
-                        }
-                    }
+                    AudioDeviceRow(
+                        devices: devices,
+                        selectedUID: selection.selectedUID,
+                        canChangeDevices: canChangeDevices,
+                        onSelect: onSelect,
+                        onDisconnect: onDisconnect
+                    )
                 }
             }
         } label: {
@@ -338,33 +373,73 @@ private struct AudioDeviceSection: View {
 }
 
 private struct AudioDeviceRow: View {
-    let name: String
-    let isSelected: Bool
+    let devices: [AudioDeviceOption]
+    let selectedUID: String?
     let canChangeDevices: Bool
-    let onSelect: () -> Void
+    let onSelect: (String?) -> Void
+    let onDisconnect: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "speaker.wave.2.circle")
                 .font(.title2)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .foregroundStyle(selectedDevice == nil ? Color.secondary : Color.accentColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text("Input and output available")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let displayedDevice {
+                    Text(displayedDevice.name)
+                    Text(selectedDevice == nil ? "Available for input and output" : "Input and output available")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Choose an audio interface")
+                    Text("Input and output are required")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
-            if isSelected {
-                Label("Selected", systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            } else {
-                Button("Select", action: onSelect)
+            if devices.count > 1 {
+                Menu {
+                    ForEach(devices) { device in
+                        Button {
+                            onSelect(device.uid)
+                        } label: {
+                            if selectedUID == device.uid {
+                                Label {
+                                    Text(device.name)
+                                } icon: {
+                                    Image(systemName: "checkmark")
+                                }
+                            } else {
+                                Text(device.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Choose", systemImage: "chevron.down")
+                }
+                .disabled(!canChangeDevices)
+            } else if let device = devices.first, selectedDevice == nil {
+                Button("Select") {
+                    onSelect(device.uid)
+                }
+                .disabled(!canChangeDevices)
+            }
+            if selectedDevice != nil {
+                Button("Disconnect", role: .destructive, action: onDisconnect)
                     .disabled(!canChangeDevices)
             }
         }
         .padding(.vertical, 10)
+    }
+
+    private var selectedDevice: AudioDeviceOption? {
+        guard let selectedUID else { return nil }
+        return devices.first { $0.uid == selectedUID }
+    }
+
+    private var displayedDevice: AudioDeviceOption? {
+        selectedDevice ?? (devices.count == 1 ? devices.first : nil)
     }
 }
 

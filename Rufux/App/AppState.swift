@@ -14,10 +14,13 @@ enum AppAction: Sendable {
     case coordinator(CallCoordinatorEvent)
     case presentCallFailure(String)
     case dismissError
+    case dismissWarning
     case resetForNewCall
 }
 
 extension AppViewState {
+    private static let maximumActivityEntries = 100
+
     mutating func reduce(_ action: AppAction) {
         switch action {
         case .setCaller(let caller):
@@ -29,14 +32,23 @@ extension AppViewState {
         case .coordinator(let event):
             apply(event)
         case .presentCallFailure(let message):
+            warningKind = nil
+            warningMessage = nil
             errorMessage = message
-            callPhase = .failed
+            applyPhase(.failed)
         case .dismissError:
             errorMessage = nil
+        case .dismissWarning:
+            warningKind = nil
+            warningMessage = nil
         case .resetForNewCall:
             callPhase = .idle
             activityEntries.removeAll()
+            callStartedAt = nil
+            callEndedAt = nil
             latestResult = nil
+            warningKind = nil
+            warningMessage = nil
             errorMessage = nil
         }
 
@@ -60,34 +72,41 @@ extension AppViewState {
         case .phaseChanged(let phase):
             if phase == .validating {
                 activityEntries.removeAll()
+                callStartedAt = nil
+                callEndedAt = nil
                 latestResult = nil
+                warningKind = nil
+                warningMessage = nil
                 errorMessage = nil
             }
-            callPhase = phase
-        case .activity(let entry):
-            activityEntries.append(entry)
+            applyPhase(phase)
+        case .activity(let activity):
+            appendActivity(activity.makeEntry())
         case .agent(let event):
             apply(event)
         case .result(let result):
             latestResult = result
-            callPhase = .completed
+            applyPhase(.completed)
         case .failure(let message):
+            warningKind = nil
+            warningMessage = nil
             errorMessage = message
-            callPhase = .failed
+            applyPhase(.failed)
         }
     }
 
     private mutating func apply(_ event: AgentSessionEvent) {
         switch event {
         case .activity(let activity):
-            activityEntries.append(CallActivityEntry(message: activity.rawValue))
+            if warningKind == .reconnecting {
+                warningKind = nil
+                warningMessage = nil
+            }
+            appendActivity(activity.callActivityEvent.makeEntry())
         case .diagnostic:
             break
-        case .resultRecorded(let result):
-            activityEntries.append(CallActivityEntry(
-                kind: .success,
-                message: "Appointment outcome recorded: \(result.status)"
-            ))
+        case .resultRecorded:
+            appendActivity(CallActivityEvent.resultRecorded.makeEntry())
         case .resultWritten(let result, let url):
             latestResult = CallResult(
                 appointment: result,
@@ -95,15 +114,60 @@ extension AppViewState {
                 inputPCMURL: nil,
                 outputPCMURL: nil
             )
-        case .resultWriteFailed(let message), .failure(let message):
-            errorMessage = message
-        case .reconnecting(let attempt, let maximumAttempts, let reason):
-            activityEntries.append(CallActivityEntry(
-                kind: .warning,
-                message: "Reconnecting assistant (\(attempt)/\(maximumAttempts)): \(reason)"
-            ))
+        case .resultWriteFailed, .failure:
+            // The coordinator decides whether these failures are terminal and emits
+            // a separate failure event after cleanup. Keeping that distinction here
+            // prevents recoverable status from presenting a terminal alert.
+            break
+        case .pcmOutputReady:
+            break
+        case .pcmOutputFailed(let message):
+            let warning = String(localized: "PCM audio could not be saved: \(message)")
+            warningKind = .pcmOutput
+            warningMessage = warning
+            appendActivity(CallActivityEvent.warning(warning).makeEntry())
+        case .reconnecting(let attempt, let maximumAttempts, _):
+            warningKind = .reconnecting
+            warningMessage = String(localized: "The assistant connection was interrupted. Rufux is reconnecting.")
+            appendActivity(CallActivityEvent.reconnecting(
+                attempt: attempt,
+                maximumAttempts: maximumAttempts
+            ).makeEntry())
         case .closed:
             break
+        }
+    }
+
+    private mutating func applyPhase(_ phase: CallPhase) {
+        if phase == .active, callStartedAt == nil {
+            callStartedAt = Date()
+            callEndedAt = nil
+        } else if callStartedAt != nil,
+                  callEndedAt == nil,
+                  phase == .ending || phase == .finalizing || phase == .completed || phase == .failed {
+            callEndedAt = Date()
+        }
+        callPhase = phase
+    }
+
+    private mutating func appendActivity(_ entry: CallActivityEntry) {
+        if let lastIndex = activityEntries.indices.last,
+           activityEntries[lastIndex].coalescingKey == entry.coalescingKey {
+            let previous = activityEntries[lastIndex]
+            activityEntries[lastIndex] = CallActivityEntry(
+                id: previous.id,
+                timestamp: entry.timestamp,
+                kind: entry.kind,
+                message: entry.message,
+                coalescingKey: entry.coalescingKey,
+                occurrenceCount: previous.occurrenceCount + 1
+            )
+        } else {
+            activityEntries.append(entry)
+        }
+
+        if activityEntries.count > Self.maximumActivityEntries {
+            activityEntries.removeFirst(activityEntries.count - Self.maximumActivityEntries)
         }
     }
 
@@ -118,6 +182,29 @@ extension AppViewState {
             hasFullDuplexAudioDevice: selectedAudioDevice?.isFullDuplex == true,
             hasValidOutputConfiguration: settings.hasValidOutputConfiguration
         )
+    }
+}
+
+private extension AgentSessionActivity {
+    var callActivityEvent: CallActivityEvent {
+        switch self {
+        case .preparing:
+            return .preparingAssistant
+        case .waitingForCallee:
+            return .waitingForCallee
+        case .calleeSpeaking:
+            return .calleeSpeaking
+        case .assistantSpeaking:
+            return .assistantSpeaking
+        case .waitingForAssistant, .assistantWorking:
+            return .waitingForReasoning
+        case .discussionOngoing:
+            return .conversationInProgress
+        case .recoveringOutcome:
+            return .recoveringResult
+        case .closing:
+            return .finalizing
+        }
     }
 }
 

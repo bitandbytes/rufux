@@ -5,6 +5,8 @@
 //  Created by Hasini Suchetha Jayathilaka on 10.10.26.
 //
 
+import AppKit
+import PhoneBTCore
 import SwiftUI
 
 struct ContentView: View {
@@ -57,9 +59,11 @@ private struct CallWorkspaceView: View {
     @Bindable var callerEditor: CallerEditorStore
     let deviceModel: DeviceSelectionModel
     let settingsStore: SettingsStore
+    @State private var destinationPhoneNumber = ""
 
     private var isReady: Bool {
         callerEditor.isValid &&
+            PhoneNumberValidator.isValid(destinationPhoneNumber) &&
             deviceModel.state.isReady &&
             settingsStore.appSettings.hasAPIKey &&
             settingsStore.appSettings.hasValidOutputConfiguration &&
@@ -68,7 +72,12 @@ private struct CallWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceHeader(callPhase: store.state.callPhase, isReady: isReady)
+            WorkspaceHeader(
+                callPhase: store.state.callPhase,
+                isReady: isReady,
+                callStartedAt: store.state.callStartedAt,
+                callEndedAt: store.state.callEndedAt
+            )
 
         Divider()
 
@@ -78,6 +87,7 @@ private struct CallWorkspaceView: View {
 
                 CallOperationsPane(
                     store: store,
+                    destinationPhoneNumber: $destinationPhoneNumber,
                     callerEditor: callerEditor,
                     deviceModel: deviceModel,
                     settingsStore: settingsStore,
@@ -107,6 +117,8 @@ private struct CallWorkspaceView: View {
 private struct WorkspaceHeader: View {
     let callPhase: CallPhase
     let isReady: Bool
+    let callStartedAt: Date?
+    let callEndedAt: Date?
 
     private var statusTitle: LocalizedStringResource {
         switch callPhase {
@@ -140,7 +152,7 @@ private struct WorkspaceHeader: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Assisted appointment call")
+                Text("Rufux Call Assistant")
                     .font(.title2)
                     .fontWeight(.semibold)
 
@@ -149,6 +161,10 @@ private struct WorkspaceHeader: View {
             }
 
             Spacer()
+
+            if let callStartedAt {
+                CallDurationView(startDate: callStartedAt, endDate: callEndedAt)
+            }
 
             Label(statusTitle, systemImage: statusImage)
                 .font(.subheadline)
@@ -371,7 +387,8 @@ private struct MultilineFormField: View {
 
 private struct CallOperationsPane: View {
     let store: AppStore
-    @Bindable var callerEditor: CallerEditorStore
+    @Binding var destinationPhoneNumber: String
+    let callerEditor: CallerEditorStore
     let deviceModel: DeviceSelectionModel
     let settingsStore: SettingsStore
     let canStartCall: Bool
@@ -382,14 +399,19 @@ private struct CallOperationsPane: View {
             VStack(alignment: .leading, spacing: 18) {
                 DeviceSelectionView(model: deviceModel)
                 CallControlCard(
-                    phoneNumber: $callerEditor.telephoneNumber,
+                    phoneNumber: $destinationPhoneNumber,
                     canStartCall: canStartCall,
                     callPhase: callPhase,
                     onStart: startCall,
                     onEnd: endCall
                 )
-                ActivityLogCard(isCallActive: callPhase.isCallInProgress)
-                CallResultCard()
+                ActivityLogCard(
+                    entries: store.state.activityEntries,
+                    callPhase: callPhase,
+                    warningMessage: store.state.warningMessage,
+                    onDismissWarning: { store.send(.dismissWarning) }
+                )
+                CallResultCard(result: store.state.latestResult)
             }
             .padding(20)
         }
@@ -409,7 +431,7 @@ private struct CallOperationsPane: View {
                 let request = CallStartRequest(
                     apiKey: apiKey,
                     configuration: configuration,
-                    phoneNumber: callerEditor.telephoneNumber,
+                    phoneNumber: PhoneNumberValidator.normalized(destinationPhoneNumber),
                     resultOutputDirectory: resultOutputDirectory,
                     isPCMOutputEnabled: settingsStore.isPCMOutputEnabled,
                     pcmOutputDirectory: settingsStore.pcmOutputDirectory
@@ -527,7 +549,7 @@ private struct CallControlCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Phone number")
+                    Text("Number to call")
                         .font(.headline)
 
                     Text("GPT-Live starts only after the call is answered.")
@@ -546,13 +568,13 @@ private struct CallControlCard: View {
 
             HStack(spacing: 10) {
                 TextField("+49 123 456 7890", text: $phoneNumber)
+                    .textContentType(.telephoneNumber)
                     .textFieldStyle(.roundedBorder)
                     .font(.title3.monospacedDigit())
                     .disabled(callPhase.isCallInProgress)
 
                 Button(action: onStart) {
-                    Label("Start call", systemImage: "phone.fill")
-                        .frame(minWidth: 92)
+                    Label("Call", systemImage: "phone.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
@@ -592,58 +614,131 @@ private extension CallPhase {
 }
 
 private struct ActivityLogCard: View {
-    let isCallActive: Bool
-
-    private let entries = SampleData.activityEntries
+    let entries: [CallActivityEntry]
+    let callPhase: CallPhase
+    let warningMessage: String?
+    let onDismissWarning: () -> Void
 
     var body: some View {
-        GroupBox {
-            VStack(spacing: 0) {
-                ForEach(entries) { entry in
-                    ActivityLogRow(entry: entry)
+        VStack(alignment: .leading, spacing: 10) {
+            if let warningMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
 
-                    if entry.id != entries.last?.id {
-                        Divider()
-                            .padding(.leading, 34)
+                    Text(warningMessage)
+                        .font(.subheadline)
+
+                    Spacer()
+
+                    Button(action: onDismissWarning) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss warning")
+                }
+                .padding(12)
+                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            GroupBox {
+                ActivityLogContent(entries: entries)
+            } label: {
+                HStack {
+                    Label("Call activity", systemImage: "text.alignleft")
+                        .fontWeight(.semibold)
+
+                    Spacer()
+
+                    Text(callPhase.isCallInProgress ? "Live" : "Most recent")
+                        .font(.caption)
+                        .foregroundStyle(callPhase.isCallInProgress ? .orange : .secondary)
+                }
+            }
+
+            Label("Conversation transcripts are not displayed or stored in this log.", systemImage: "lock")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+        }
+    }
+}
+
+private struct ActivityLogContent: View {
+    private static let viewportHeight: CGFloat = 220
+
+    let entries: [CallActivityEntry]
+
+    var body: some View {
+        Group {
+            if entries.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "text.alignleft")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+
+                    Text("No call activity")
+                        .font(.headline)
+
+                    Text("Status updates will appear here without conversation transcripts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(entries) { entry in
+                                VStack(spacing: 0) {
+                                    ActivityLogRow(entry: entry)
+
+                                    if entry.id != latestEntryID {
+                                        Divider()
+                                            .padding(.leading, 34)
+                                    }
+                                }
+                                .id(entry.id)
+                            }
+                        }
+                        .padding(4)
+                    }
+                    .onChange(of: latestEntryID, initial: true) { _, entryID in
+                        guard let entryID else { return }
+                        proxy.scrollTo(entryID, anchor: .bottom)
                     }
                 }
             }
-            .padding(4)
-        } label: {
-            HStack {
-                Label("Call activity", systemImage: "text.alignleft")
-                    .fontWeight(.semibold)
-
-                Spacer()
-
-                Text(isCallActive ? "Live" : "Most recent")
-                    .font(.caption)
-                    .foregroundStyle(isCallActive ? .orange : .secondary)
-            }
         }
+        .frame(height: Self.viewportHeight)
+    }
 
-        Label("Conversation transcripts are not displayed or stored in this log.", systemImage: "lock")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
+    private var latestEntryID: UUID? {
+        entries.last?.id
     }
 }
 
 private struct ActivityLogRow: View {
-    let entry: ActivityEntry
+    let entry: CallActivityEntry
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: entry.systemImage)
-                .foregroundStyle(entry.color)
+            Image(systemName: entry.kind.systemImage)
+                .foregroundStyle(entry.kind.color)
                 .frame(width: 24)
 
             Text(entry.message)
                 .font(.subheadline)
 
+            if entry.occurrenceCount > 1 {
+                Text(verbatim: "×\(entry.occurrenceCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
 
-            Text(entry.time)
+            Text(entry.timestamp, format: .dateTime.hour().minute().second())
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -651,56 +746,85 @@ private struct ActivityLogRow: View {
     }
 }
 
-private struct CallResultCard: View {
+private extension CallActivityKind {
+    var systemImage: String {
+        switch self {
+        case .information: "info.circle.fill"
+        case .success: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .failure: "xmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .information: .blue
+        case .success: .green
+        case .warning: .orange
+        case .failure: .red
+        }
+    }
+}
+
+private struct CallDurationView: View {
+    let startDate: Date
+    let endDate: Date?
+
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(.green.opacity(0.14))
-                            .frame(width: 42, height: 42)
-
-                        Image(systemName: "calendar.badge.checkmark")
-                            .foregroundStyle(.green)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Appointment booked")
-                            .font(.headline)
-
-                        Text("Latest completed call")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Text("BOOKED")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.green.opacity(0.1), in: Capsule())
-                }
-
-                Divider()
-
-                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 10) {
-                    ResultGridRow(label: "Date", value: "15 October")
-                    ResultGridRow(label: "Time", value: "14:30")
-                    ResultGridRow(label: "Practice", value: "ABC Medical Practice")
-                    ResultGridRow(label: "Notes", value: "Routine appointment confirmed by the practice.")
-                }
-
-                HStack {
-                    Spacer()
-
-                    Button("Show output JSON") { }
+        Group {
+            if let endDate {
+                durationLabel(at: endDate)
+            } else {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    durationLabel(at: context.date)
                 }
             }
-            .padding(4)
+        }
+        .font(.headline.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Elapsed call duration")
+    }
+
+    private func durationLabel(at date: Date) -> some View {
+        Text(verbatim: formattedDuration(at: date))
+    }
+
+    private func formattedDuration(at date: Date) -> String {
+        let totalSeconds = max(0, Int(date.timeIntervalSince(startDate)))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+private struct CallResultCard: View {
+    let result: CallResult?
+
+    var body: some View {
+        GroupBox {
+            if let result {
+                CallResultContent(result: result)
+                    .padding(4)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+
+                    Text("No call result yet")
+                        .font(.headline)
+
+                    Text("The structured appointment outcome will appear after a completed call.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 110)
+                .padding(4)
+            }
         } label: {
             Label("Call result", systemImage: "doc.text.magnifyingglass")
                 .fontWeight(.semibold)
@@ -708,8 +832,168 @@ private struct CallResultCard: View {
     }
 }
 
+private struct CallResultContent: View {
+    let result: CallResult
+
+    private var outcome: AppointmentOutcome {
+        result.outcome
+    }
+
+    private var appointmentDate: String? {
+        nonempty(result.appointment.appointmentDate)
+    }
+
+    private var appointmentTime: String? {
+        nonempty(result.appointment.appointmentTime)
+    }
+
+    private var practice: String? {
+        nonempty(result.appointment.practice)
+    }
+
+    private var notes: String? {
+        nonempty(result.appointment.notes)
+    }
+
+    private var hasDetails: Bool {
+        appointmentDate != nil || appointmentTime != nil || practice != nil || notes != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(outcome.color.opacity(0.14))
+                        .frame(width: 42, height: 42)
+
+                    Image(systemName: outcome.systemImage)
+                        .foregroundStyle(outcome.color)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(outcome.title)
+                        .font(.headline)
+
+                    Text("Latest completed call")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(outcome.badge)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(outcome.color)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(outcome.color.opacity(0.1), in: Capsule())
+            }
+
+            Divider()
+
+            if hasDetails {
+                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 10) {
+                    if let appointmentDate {
+                        ResultGridRow(label: "Date", value: appointmentDate)
+                    }
+                    if let appointmentTime {
+                        ResultGridRow(label: "Time", value: appointmentTime)
+                    }
+                    if let practice {
+                        ResultGridRow(label: "Practice", value: practice)
+                    }
+                    if let notes {
+                        ResultGridRow(label: "Notes", value: notes)
+                    }
+                }
+            } else {
+                Text("No additional appointment details were provided.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label(result.resultURL.lastPathComponent, systemImage: "doc.text")
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if !result.pcmURLs.isEmpty {
+                    Label("PCM audio files saved", systemImage: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+
+                Button {
+                    revealInFinder([result.resultURL])
+                } label: {
+                    Label("Show result JSON", systemImage: "finder")
+                }
+
+                if !result.pcmURLs.isEmpty {
+                    Button {
+                        revealInFinder(result.pcmURLs)
+                    } label: {
+                        Label("Show PCM files", systemImage: "finder")
+                    }
+                }
+            }
+        }
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func revealInFinder(_ urls: [URL]) {
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+}
+
+private extension AppointmentOutcome {
+    var title: LocalizedStringResource {
+        switch self {
+        case .booked: "Appointment booked"
+        case .notBooked: "Appointment not booked"
+        case .unknown: "Appointment outcome unknown"
+        }
+    }
+
+    var badge: LocalizedStringResource {
+        switch self {
+        case .booked: "BOOKED"
+        case .notBooked: "NOT BOOKED"
+        case .unknown: "UNKNOWN"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .booked: "calendar.badge.checkmark"
+        case .notBooked: "xmark.circle.fill"
+        case .unknown: "questionmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .booked: .green
+        case .notBooked: .orange
+        case .unknown: .secondary
+        }
+    }
+}
+
 private struct ResultGridRow: View {
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
@@ -864,54 +1148,6 @@ private struct SectionHeading: View {
                 .foregroundStyle(.secondary)
         }
     }
-}
-
-private struct ActivityEntry: Identifiable {
-    let id: String
-    let time: String
-    let message: String
-    let systemImage: String
-    let color: Color
-}
-
-private enum SampleData {
-    static let activityEntries = [
-        ActivityEntry(
-            id: "connected",
-            time: "14:02:06",
-            message: "Phone and call audio interface are ready",
-            systemImage: "checkmark.circle.fill",
-            color: .green
-        ),
-        ActivityEntry(
-            id: "dialing",
-            time: "14:02:11",
-            message: "Dialing +49 123 456 7890",
-            systemImage: "phone.arrow.up.right",
-            color: .blue
-        ),
-        ActivityEntry(
-            id: "active",
-            time: "14:02:18",
-            message: "Call answered · voice assistant started",
-            systemImage: "waveform.circle.fill",
-            color: .orange
-        ),
-        ActivityEntry(
-            id: "speaking",
-            time: "14:02:42",
-            message: "Assistant speaking",
-            systemImage: "speaker.wave.2.fill",
-            color: .purple
-        ),
-        ActivityEntry(
-            id: "result",
-            time: "14:04:37",
-            message: "Appointment outcome recorded",
-            systemImage: "calendar.badge.checkmark",
-            color: .green
-        )
-    ]
 }
 
 #Preview {

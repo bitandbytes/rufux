@@ -6,15 +6,9 @@
     {
       "layers" : [
         {
-          "image-name" : "PhoneBT-Icon 3.svg",
-          "name" : "PhoneBT-Icon 3",
-          "position" : {
-            "scale" : 0.75,
-            "translation-in-points" : [
-              0,
-              0
-            ]
-          }
+          "hidden" : false,
+          "image-name" : "rufux-icon-v2.svg",
+          "name" : "rufux-icon-v2"
         }
       ],
       "shadow" : {

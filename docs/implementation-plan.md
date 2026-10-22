@@ -234,6 +234,8 @@ The following paths all reach the correct terminal state:
 
 ## Stage 6 — Activity Logger and Live Status
 
+**Status:** Implemented and validated.
+
 ### Goals
 
 - Drive the header, controls, timer, and logger from typed runtime events.
@@ -268,7 +270,16 @@ The following paths all reach the correct terminal state:
 - Repeated events do not flood the activity list.
 - No transcript content appears in logs.
 
+### Delivered
+
+- Replaced the prototype activity list with typed, privacy-safe HFP and agent activity presentations driven by coordinator events.
+- Added elapsed active-call timing, phase-consistent header and control status, recoverable warning presentation, and terminal failure alerts.
+- Coalesced consecutive repeated updates, capped in-memory history at 100 entries, and kept diagnostic or transcript content out of the UI log.
+- Added reducer tests for coalescing, history bounds, privacy filtering, warning/error separation, and timer transitions.
+
 ## Stage 7 — PCM Output and Result Presentation
+
+**Status:** Implemented and validated.
 
 ### Goals
 
@@ -299,6 +310,13 @@ The following paths all reach the correct terminal state:
 - Every completed call displays the same result that was written to disk.
 - PCM files are created only when enabled.
 - Output failures do not leave audio routing or call resources active.
+
+### Delivered
+
+- Deferred optional PCM file creation until the call becomes active, emitted confirmed file URLs through typed events, and made PCM setup/write failures nonfatal with visible warnings and partial-file cleanup.
+- Persisted the exact appointment result displayed by Rufux using timestamped, UUID-backed collision-safe filenames in the configured result directory.
+- Replaced the prototype result card with presentations for `booked`, `not_booked`, and `unknown`, including optional appointment details and Finder reveal actions for confirmed output files.
+- Retained completed results until the next call starts and added reducer and filename tests covering Stage 7 behavior.
 
 ## Stage 8 — Testing, Permissions, and Hardening
 

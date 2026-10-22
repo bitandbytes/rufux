@@ -12,7 +12,7 @@ nonisolated enum CallCoordinatorEvent: Equatable, Sendable {
     case hfpConnectionChanged(address: String, isConnected: Bool)
     case audioSelectionChanged(uid: String?)
     case phaseChanged(CallPhase)
-    case activity(CallActivityEntry)
+    case activity(CallActivityEvent)
     case agent(AgentSessionEvent)
     case result(CallResult)
     case failure(String)
@@ -233,6 +233,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
     private var callID: UUID?
     private var outputConfiguration: AgentSessionOutputConfiguration?
     private var writtenResult: AppointmentResult?
+    private var writtenPCMFiles: PCMOutputFiles?
     private var isCleaningUp = false
     private var agentDidClose = false
     private var audioDidStop = true
@@ -274,18 +275,19 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
 
     func startCall(_ request: CallStartRequest) async {
         guard !managedDeviceState.callPhase.isCallInProgress, !isCleaningUp else {
-            emitActivity(CallServiceError.callAlreadyInProgress.localizedDescription, kind: .warning)
+            emitActivity(.warning(CallServiceError.callAlreadyInProgress.localizedDescription))
             return
         }
 
         let newCallID = UUID()
         callID = newCallID
         writtenResult = nil
+        writtenPCMFiles = nil
         cleanupFailure = nil
         agentDidClose = false
         audioDidStop = true
         updateCallPhase(.validating)
-        emitActivity("Validating call settings")
+        emitActivity(.validationStarted)
 
         do {
             let output = try await validatedOutputConfiguration(for: request)
@@ -306,11 +308,11 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             agentSession = session
             startAgentEventConsumer(for: session, callID: newCallID)
             updateCallPhase(.dialing)
-            emitActivity("Dialing \(request.phoneNumber)")
+            emitActivity(.dialing)
             try await hfpService.dial(number: request.phoneNumber)
             guard callID == newCallID, !isCleaningUp else { return }
             updateCallPhase(.ringing)
-            emitActivity("Phone is ringing. The call assistant will start after the call is answered.")
+            emitActivity(.ringing)
         } catch {
             await beginCleanup(
                 failure: "Could not start the call: \(error.localizedDescription)",
@@ -322,7 +324,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
     func endCall() async {
         guard managedDeviceState.callPhase.isCallInProgress, !isCleaningUp else { return }
         updateCallPhase(.ending)
-        emitActivity("Ending the telephone call")
+        emitActivity(.ending)
 
         do {
             try await hfpService.endCall()
@@ -380,6 +382,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         hfpEventTask = nil
         managedDeviceState.lastError = nil
         managedDeviceState.hfpConnection = .connecting(address: address)
+        emitActivity(.phoneConnecting)
         deviceEventStream.emit(.hfpConnectionChanged(managedDeviceState.hfpConnection))
         publishDeviceState()
 
@@ -402,6 +405,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         }
 
         managedDeviceState.hfpConnection = .connected(address: address)
+        emitActivity(.phoneConnected)
         eventStream.emit(.hfpConnectionChanged(address: address, isConnected: true))
         deviceEventStream.emit(.hfpConnectionChanged(managedDeviceState.hfpConnection))
         publishDeviceState()
@@ -489,6 +493,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
 
         if let address {
             eventStream.emit(.hfpConnectionChanged(address: address, isConnected: false))
+            emitActivity(.phoneDisconnected)
         }
         deviceEventStream.emit(.hfpConnectionChanged(.disconnected))
         publishDeviceState()
@@ -520,6 +525,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             if let address {
                 eventStream.emit(.hfpConnectionChanged(address: address, isConnected: false))
             }
+            emitActivity(.phoneDisconnected)
             deviceEventStream.emit(.hfpConnectionChanged(.disconnected))
             publishDeviceState()
             hfpEventTask = nil
@@ -548,14 +554,16 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         case .callDialing:
             guard !isCleaningUp, managedDeviceState.callPhase.isCallInProgress else { return }
             updateCallPhase(.dialing)
+            emitActivity(.dialing)
         case .callAlerting:
             guard !isCleaningUp, managedDeviceState.callPhase.isCallInProgress else { return }
             updateCallPhase(.ringing)
+            emitActivity(.ringing)
         case .callActive:
             await activateCallAudio()
         case .callEnded:
             guard managedDeviceState.callPhase.isCallInProgress || isCleaningUp else { return }
-            emitActivity("Telephone call ended")
+            emitActivity(.callEnded)
             await beginCleanup(failure: nil, finalizeOutcome: true)
         case .incomingCall,
              .callAnswered,
@@ -580,9 +588,9 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         let apiKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else { throw CallServiceError.missingAPIKey }
 
-        let phoneNumber = request.phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        let digitCount = phoneNumber.filter(\.isNumber).count
-        guard digitCount >= 5 else { throw CallServiceError.invalidPhoneNumber }
+        guard PhoneNumberValidator.isValid(request.phoneNumber) else {
+            throw CallServiceError.invalidPhoneNumber
+        }
 
         guard !request.configuration.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !request.configuration.dateOfBirth.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -609,14 +617,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             try validateWritableDirectory(pcmOutputDirectory)
         }
 
-        let timestampFormatter = ISO8601DateFormatter()
-        timestampFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let timestamp = timestampFormatter.string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-        let resultURL = request.resultOutputDirectory.appending(
-            path: "rufux-\(timestamp)-appointment-result.json",
-            directoryHint: .notDirectory
-        )
+        let resultURL = CallOutputURLBuilder.resultURL(in: request.resultOutputDirectory)
         return AgentSessionOutputConfiguration(
             resultURL: resultURL,
             isPCMOutputEnabled: request.isPCMOutputEnabled,
@@ -639,7 +640,6 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
               let session = agentSession,
               let activeCallID = callID else { return }
 
-        emitActivity("Call answered. Starting the selected audio route.")
         do {
             let audioSession = try await audioService.startAudioSession()
             guard callID == activeCallID, !isCleaningUp else {
@@ -650,7 +650,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             session.prepare()
             try session.startAudio(using: audioSession)
             updateCallPhase(.active)
-            emitActivity("Call assistant and audio are active", kind: .success)
+            emitActivity(.callActive)
         } catch {
             try? await hfpService.endCall()
             await beginCleanup(
@@ -684,6 +684,10 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             writtenResult = result
         case .resultWriteFailed(let message):
             cleanupFailure = cleanupFailure ?? "Could not save the appointment result: \(message)"
+        case .pcmOutputReady(let files):
+            writtenPCMFiles = files
+        case .pcmOutputFailed:
+            writtenPCMFiles = nil
         case .failure(let message):
             guard !isCleaningUp else {
                 cleanupFailure = cleanupFailure ?? message
@@ -714,7 +718,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         isCleaningUp = true
         cleanupFailure = failure
         updateCallPhase(.finalizing)
-        emitActivity("Finalizing the call and restoring audio routing")
+        emitActivity(.finalizing)
 
         if let agentSession {
             agentDidClose = false
@@ -734,6 +738,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         let failure = cleanupFailure
         let result = writtenResult
         let output = outputConfiguration
+        let pcmFiles = writtenPCMFiles
 
         agentEventTask?.cancel()
         agentEventTask = nil
@@ -741,6 +746,7 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         callID = nil
         outputConfiguration = nil
         writtenResult = nil
+        writtenPCMFiles = nil
         cleanupFailure = nil
         agentDidClose = false
         isCleaningUp = false
@@ -748,43 +754,24 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         if let failure {
             updateCallPhase(.failed)
             eventStream.emit(.failure(failure))
-            emitActivity(failure, kind: .failure)
+            emitActivity(.failure(failure))
             return
         }
 
         if let result, let output {
-            let pcmURLs = pcmURLs(for: output)
             eventStream.emit(.result(CallResult(
                 appointment: result,
                 resultURL: output.resultURL,
-                inputPCMURL: pcmURLs?.input,
-                outputPCMURL: pcmURLs?.output
+                inputPCMURL: pcmFiles?.inputURL,
+                outputPCMURL: pcmFiles?.outputURL
             )))
         }
         updateCallPhase(.completed)
-        emitActivity("Call cleanup completed", kind: .success)
+        emitActivity(.completed)
     }
 
-    private func pcmURLs(
-        for output: AgentSessionOutputConfiguration
-    ) -> (input: URL, output: URL)? {
-        guard let directory = output.resolvedPCMOutputDirectory else { return nil }
-        let resultStem = output.resultURL.deletingPathExtension().lastPathComponent
-        let suffix = "-appointment-result"
-        let callStem = resultStem.hasSuffix(suffix)
-            ? String(resultStem.dropLast(suffix.count))
-            : resultStem
-        return (
-            directory.appending(path: "\(callStem)-agent-input.pcm"),
-            directory.appending(path: "\(callStem)-agent-output.pcm")
-        )
-    }
-
-    private func emitActivity(
-        _ message: String,
-        kind: CallActivityKind = .information
-    ) {
-        eventStream.emit(.activity(CallActivityEntry(kind: kind, message: message)))
+    private func emitActivity(_ activity: CallActivityEvent) {
+        eventStream.emit(.activity(activity))
     }
 
     private func publishDeviceState() {
@@ -850,7 +837,7 @@ actor PreviewCallCoordinator: CallCoordinating, DeviceManaging {
         guard !managedDeviceState.callPhase.isCallInProgress else { return }
         managedDeviceState.callPhase = .dialing
         eventStream.emit(.phaseChanged(.dialing))
-        eventStream.emit(.activity(CallActivityEntry(message: "Dialing \(request.phoneNumber)")))
+        eventStream.emit(.activity(.dialing))
         publishDeviceState()
         managedDeviceState.callPhase = .ringing
         eventStream.emit(.phaseChanged(.ringing))
