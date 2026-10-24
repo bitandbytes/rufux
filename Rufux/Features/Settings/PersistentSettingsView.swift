@@ -32,17 +32,26 @@ struct PersistentSettingsView: View {
                     }
                 )
 
+#if DEBUG
                 OutputSettingsSection(
-                    isPCMOutputEnabled: $store.isPCMOutputEnabled,
                     resultDirectory: store.resultOutputDirectory,
-                    pcmDirectory: store.pcmOutputDirectory,
                     chooseResultDirectory: {
                         Task { await store.chooseResultDirectory() }
                     },
+                    isPCMOutputEnabled: $store.isPCMOutputEnabled,
+                    pcmDirectory: store.pcmOutputDirectory,
                     choosePCMDirectory: {
                         Task { await store.choosePCMDirectory() }
                     }
                 )
+#else
+                OutputSettingsSection(
+                    resultDirectory: store.resultOutputDirectory,
+                    chooseResultDirectory: {
+                        Task { await store.chooseResultDirectory() }
+                    }
+                )
+#endif
 
                 RememberedDeviceSettingsSection(
                     hfpAddress: store.preferredHFPDeviceAddress,
@@ -148,11 +157,13 @@ private struct APIKeySettingsSection: View {
 }
 
 private struct OutputSettingsSection: View {
-    @Binding var isPCMOutputEnabled: Bool
     let resultDirectory: URL?
-    let pcmDirectory: URL?
     let chooseResultDirectory: () -> Void
+#if DEBUG
+    @Binding var isPCMOutputEnabled: Bool
+    let pcmDirectory: URL?
     let choosePCMDirectory: () -> Void
+#endif
 
     var body: some View {
         GroupBox("Call output") {
@@ -165,9 +176,11 @@ private struct OutputSettingsSection: View {
                     choose: chooseResultDirectory
                 )
 
+#if DEBUG
                 Divider()
 
                 Toggle("Save PCM audio", isOn: $isPCMOutputEnabled)
+                    .accessibilityIdentifier("save-pcm-audio")
 
                 DirectorySettingRow(
                     title: "PCM recording folder",
@@ -176,6 +189,7 @@ private struct OutputSettingsSection: View {
                     isEnabled: isPCMOutputEnabled,
                     choose: choosePCMDirectory
                 )
+#endif
             }
             .padding(4)
         }

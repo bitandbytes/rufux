@@ -147,6 +147,7 @@ protocol CallCoordinating: Sendable {
     func bootstrap() async
     func startCall(_ request: CallStartRequest) async
     func endCall() async
+    func shutdown() async
 }
 
 protocol DeviceManaging: Sendable {
@@ -226,9 +227,11 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
     private let hfpService: any HFPServicing
     private let audioService: any AudioServicing
     private let agentFactory: any AgentSessionCreating
+    private let cleanupTimeoutNanoseconds: UInt64
     private var managedDeviceState = DeviceManagementState.empty
     private var hfpEventTask: Task<Void, Never>?
     private var agentEventTask: Task<Void, Never>?
+    private var cleanupTimeoutTask: Task<Void, Never>?
     private var agentSession: (any AgentSessionServicing)?
     private var callID: UUID?
     private var outputConfiguration: AgentSessionOutputConfiguration?
@@ -242,11 +245,13 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
     init(
         hfpService: any HFPServicing,
         audioService: any AudioServicing,
-        agentFactory: any AgentSessionCreating
+        agentFactory: any AgentSessionCreating,
+        cleanupTimeoutNanoseconds: UInt64 = 10_000_000_000
     ) {
         self.hfpService = hfpService
         self.audioService = audioService
         self.agentFactory = agentFactory
+        self.cleanupTimeoutNanoseconds = cleanupTimeoutNanoseconds
     }
 
     @MainActor static func live() -> CallCoordinator {
@@ -284,6 +289,8 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         writtenResult = nil
         writtenPCMFiles = nil
         cleanupFailure = nil
+        cleanupTimeoutTask?.cancel()
+        cleanupTimeoutTask = nil
         agentDidClose = false
         audioDidStop = true
         updateCallPhase(.validating)
@@ -335,6 +342,33 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
                 finalizeOutcome: true
             )
         }
+    }
+
+    func shutdown() async {
+        hfpEventTask?.cancel()
+        hfpEventTask = nil
+
+        if managedDeviceState.callPhase.isCallInProgress, !isCleaningUp {
+            try? await hfpService.endCall()
+            await beginCleanup(failure: nil, finalizeOutcome: false)
+        } else if !isCleaningUp {
+            agentSession?.close(finalizeOutcome: false)
+            await audioService.stopAudioSession()
+        }
+
+        for _ in 0..<40 where isCleaningUp {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if isCleaningUp {
+            agentDidClose = true
+            audioDidStop = true
+            finishCleanupIfPossible()
+        }
+
+        agentEventTask?.cancel()
+        agentEventTask = nil
+        await audioService.stopAudioSession()
+        await hfpService.disconnect()
     }
 
     func refreshDevices() async {
@@ -609,9 +643,17 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
             throw CallServiceError.audioDeviceUnavailable
         }
 
+#if DEBUG
+        let isPCMOutputEnabled = request.isPCMOutputEnabled
+        let pcmOutputDirectory = request.pcmOutputDirectory
+#else
+        let isPCMOutputEnabled = false
+        let pcmOutputDirectory: URL? = nil
+#endif
+
         try validateWritableDirectory(request.resultOutputDirectory)
-        if request.isPCMOutputEnabled {
-            guard let pcmOutputDirectory = request.pcmOutputDirectory else {
+        if isPCMOutputEnabled {
+            guard let pcmOutputDirectory else {
                 throw CallServiceError.invalidOutputDirectory(request.resultOutputDirectory)
             }
             try validateWritableDirectory(pcmOutputDirectory)
@@ -620,8 +662,8 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         let resultURL = CallOutputURLBuilder.resultURL(in: request.resultOutputDirectory)
         return AgentSessionOutputConfiguration(
             resultURL: resultURL,
-            isPCMOutputEnabled: request.isPCMOutputEnabled,
-            pcmOutputDirectory: request.pcmOutputDirectory
+            isPCMOutputEnabled: isPCMOutputEnabled,
+            pcmOutputDirectory: pcmOutputDirectory
         )
     }
 
@@ -723,12 +765,34 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
         if let agentSession {
             agentDidClose = false
             agentSession.close(finalizeOutcome: finalizeOutcome)
+            startCleanupTimeout(for: callID)
         } else {
             agentDidClose = true
         }
 
         await audioService.stopAudioSession()
         audioDidStop = true
+        finishCleanupIfPossible()
+    }
+
+    private func startCleanupTimeout(for callID: UUID?) {
+        cleanupTimeoutTask?.cancel()
+        cleanupTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: self?.cleanupTimeoutNanoseconds ?? 0)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.cleanupTimedOut(callID: callID)
+        }
+    }
+
+    private func cleanupTimedOut(callID timedOutCallID: UUID?) {
+        guard isCleaningUp, callID == timedOutCallID else { return }
+        cleanupFailure = cleanupFailure
+            ?? String(localized: "The call assistant did not finish cleanup in time.")
+        agentDidClose = true
         finishCleanupIfPossible()
     }
 
@@ -742,6 +806,8 @@ actor CallCoordinator: CallCoordinating, DeviceManaging {
 
         agentEventTask?.cancel()
         agentEventTask = nil
+        cleanupTimeoutTask?.cancel()
+        cleanupTimeoutTask = nil
         agentSession = nil
         callID = nil
         outputConfiguration = nil
@@ -816,6 +882,11 @@ actor PreviewCallCoordinator: CallCoordinating, DeviceManaging {
         ),
     ]
     private var managedDeviceState = DeviceManagementState.empty
+    private let emitsSampleResult: Bool
+
+    init(emitsSampleResult: Bool = false) {
+        self.emitsSampleResult = emitsSampleResult
+    }
 
     nonisolated func makeEventStream() -> AsyncStream<CallCoordinatorEvent> {
         eventStream.makeStream()
@@ -847,7 +918,28 @@ actor PreviewCallCoordinator: CallCoordinating, DeviceManaging {
     func endCall() async {
         guard managedDeviceState.callPhase.isCallInProgress else { return }
         managedDeviceState.callPhase = .completed
+        if emitsSampleResult {
+            let directory = FileManager.default.temporaryDirectory
+            eventStream.emit(.result(CallResult(
+                appointment: AppointmentResult(
+                    status: "booked",
+                    appointmentDate: "2026-11-03",
+                    appointmentTime: "10:30",
+                    practice: "UI Test Practice",
+                    notes: "Bring the referral."
+                ),
+                resultURL: directory.appending(path: "ui-test-result.json"),
+                inputPCMURL: nil,
+                outputPCMURL: nil
+            )))
+        }
         eventStream.emit(.phaseChanged(.completed))
+        publishDeviceState()
+    }
+
+    func shutdown() async {
+        managedDeviceState.callPhase = .completed
+        managedDeviceState.hfpConnection = .disconnected
         publishDeviceState()
     }
 

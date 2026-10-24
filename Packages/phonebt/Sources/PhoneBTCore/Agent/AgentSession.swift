@@ -109,7 +109,7 @@ enum LiveProtocol {
                     "responses": [
                         "model": AgentSession.backendModel,
                         "instructions": backendInstructions,
-                        "reasoning": ["effort": "medium"],
+                        "reasoning": ["effort": AgentSession.effort],
                         "parallel_tool_calls": false,
                         "tools": toolDefinitions,
                         "tool_choice": "auto",
@@ -190,10 +190,6 @@ enum LiveProtocol {
         "type": "function",
         "name": "end_call",
         "description": "End the telephone call after the spoken goodbye and after record_appointment_outcome has saved the latest outcome.",
-        "parameters": [
-            "type": "object",
-            "properties": [:],
-        ],
     ], [
         "type": "function",
         "name": "record_appointment_outcome",
@@ -246,6 +242,7 @@ enum LiveProtocol {
 public final class AgentSession: @unchecked Sendable {
     public static let model = "gpt-live-1"
     public static let backendModel = "gpt-6.1-sol"
+    public static let effort = "medium"
 
     private let apiKey: String
     private let configuration: InputConfiguration
@@ -394,7 +391,7 @@ public final class AgentSession: @unchecked Sendable {
                 "The telephone call has ended. Review the complete conversation and call " +
                 "record_appointment_outcome exactly once with the best supported final outcome. " +
                 "Use unknown only if the conversation truly did not establish the outcome. " +
-                "Do not call end_call because the telephone call is already over."
+                "Do call end_call only after calling record_appointment_outcome."
             ))
             send(LiveProtocol.responseCreate())
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [self] in
@@ -950,7 +947,7 @@ public final class AgentSession: @unchecked Sendable {
         
         Call record_appointment_outcome immediately whenever the conversation establishes a meaningful outcome. For a booked appointment, both a confirmed appointment_date in MM-DD format and a confirmed appointment_time are required. Repeat the confirmed date, time, practice, and other useful details in notes. Use status not_booked when the appointment could not be made, and unknown only when the outcome genuinely cannot be determined. Call record_appointment_outcome again if later conversation changes or adds material details.
         
-        Call end_call only after record_appointment_outcome has succeeded and the voice assistant has finished its goodbye. If the telephone call has already ended, record the best supported outcome but do not call end_call.
+        Call end_call only after record_appointment_outcome has succeeded and the voice assistant has finished its goodbye. If the telephone call has already ended, record the best supported outcome by calling record_appointment_outcome and then call end_call.
         """
     }
 

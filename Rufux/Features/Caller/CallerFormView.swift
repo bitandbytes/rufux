@@ -80,6 +80,7 @@ private struct CallerJSONImportCard: View {
                     Button("Choose JSON…") {
                         isFileImporterPresented = true
                     }
+                    .accessibilityIdentifier("choose-caller-json")
                 }
 
                 if let errorMessage {
@@ -184,9 +185,24 @@ private struct CallerIdentitySection: View {
     var body: some View {
         GroupBox("Caller") {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-                CallerTextFieldRow(label: "Name", prompt: "Full name", text: $name)
-                CallerTextFieldRow(label: "Date of birth", prompt: "YYYY-MM-DD", text: $dateOfBirth)
-                CallerTextFieldRow(label: "Insurance", prompt: "Provider and member number", text: $insurance)
+                CallerTextFieldRow(
+                    label: "Name",
+                    prompt: "Full name",
+                    accessibilityIdentifier: "caller-name",
+                    text: $name
+                )
+                CallerTextFieldRow(
+                    label: "Date of birth",
+                    prompt: "YYYY-MM-DD",
+                    accessibilityIdentifier: "caller-date-of-birth",
+                    text: $dateOfBirth
+                )
+                CallerTextFieldRow(
+                    label: "Insurance",
+                    prompt: "Provider and member number",
+                    accessibilityIdentifier: "caller-insurance",
+                    text: $insurance
+                )
             }
             .padding(6)
         }
@@ -205,6 +221,7 @@ private struct CallerAppointmentSection: View {
                 CallerTextFieldRow(
                     label: "Phone number",
                     prompt: "+49 123 456 7890",
+                    accessibilityIdentifier: "caller-phone-number",
                     text: $telephoneNumber
                 )
 
@@ -220,7 +237,12 @@ private struct CallerAppointmentSection: View {
                     .labelsHidden()
                 }
 
-                CallerTextFieldRow(label: "Language", prompt: "English", text: $language)
+                CallerTextFieldRow(
+                    label: "Language",
+                    prompt: "English",
+                    accessibilityIdentifier: "caller-language",
+                    text: $language
+                )
 
                 GridRow(alignment: .top) {
                     Text("Appointment details")
@@ -234,6 +256,7 @@ private struct CallerAppointmentSection: View {
                     )
                     .lineLimit(3...7)
                     .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("caller-appointment-details")
                 }
             }
             .padding(6)
@@ -244,6 +267,7 @@ private struct CallerAppointmentSection: View {
 private struct CallerTextFieldRow: View {
     let label: LocalizedStringKey
     let prompt: LocalizedStringKey
+    let accessibilityIdentifier: String
     @Binding var text: String
 
     var body: some View {
@@ -253,6 +277,7 @@ private struct CallerTextFieldRow: View {
 
             TextField(prompt, text: $text)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier(accessibilityIdentifier)
         }
     }
 }

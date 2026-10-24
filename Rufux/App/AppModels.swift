@@ -362,7 +362,7 @@ nonisolated struct AppSettings: Equatable, Sendable {
 
     static let empty = AppSettings(
         hasAPIKey: false,
-        isPCMOutputEnabled: true,
+        isPCMOutputEnabled: false,
         pcmOutputDirectory: nil,
         resultOutputDirectory: nil,
         preferredHFPDeviceAddress: nil,

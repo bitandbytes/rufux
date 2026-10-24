@@ -36,6 +36,14 @@ struct ContentView: View {
                     hfpAddress: settingsStore.appSettings.preferredHFPDeviceAddress,
                     audioUID: settingsStore.appSettings.preferredAudioDeviceUID
                 )
+#if DEBUG
+                if let importArgument = ProcessInfo.processInfo.arguments.first(where: {
+                    $0.hasPrefix("--ui-testing-import=")
+                }) {
+                    let path = String(importArgument.dropFirst("--ui-testing-import=".count))
+                    callerEditor.importFile(at: URL(fileURLWithPath: path))
+                }
+#endif
             }
             .onChange(of: callerEditor.callerDraft, initial: true) { _, caller in
                 store.send(.setCaller(caller))
@@ -422,7 +430,8 @@ private struct CallOperationsPane: View {
             do {
                 let configuration = try callerEditor.inputConfiguration()
                 let apiKey = try await settingsStore.openAIAPIKey()
-                guard let resultOutputDirectory = settingsStore.resultOutputDirectory else {
+                let settings = settingsStore.appSettings
+                guard let resultOutputDirectory = settings.resultOutputDirectory else {
                     throw SettingsPersistenceError.invalidDirectory(
                         URL(filePath: "Results"),
                         reason: "Choose a result folder in Settings."
@@ -433,8 +442,8 @@ private struct CallOperationsPane: View {
                     configuration: configuration,
                     phoneNumber: PhoneNumberValidator.normalized(destinationPhoneNumber),
                     resultOutputDirectory: resultOutputDirectory,
-                    isPCMOutputEnabled: settingsStore.isPCMOutputEnabled,
-                    pcmOutputDirectory: settingsStore.pcmOutputDirectory
+                    isPCMOutputEnabled: settings.isPCMOutputEnabled,
+                    pcmOutputDirectory: settings.pcmOutputDirectory
                 )
                 await store.startCall(request)
             } catch {
@@ -572,6 +581,7 @@ private struct CallControlCard: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.title3.monospacedDigit())
                     .disabled(callPhase.isCallInProgress)
+                    .accessibilityIdentifier("destination-phone-number")
 
                 Button(action: onStart) {
                     Label("Call", systemImage: "phone.fill")
@@ -579,12 +589,14 @@ private struct CallControlCard: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
                 .disabled(!canStartCall)
+                .accessibilityIdentifier("start-call")
 
                 Button(role: .destructive, action: onEnd) {
                     Label("End", systemImage: "phone.down.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canEndCall)
+                .accessibilityIdentifier("end-call")
             }
             .controlSize(.large)
         }
@@ -936,6 +948,7 @@ private struct CallResultContent: View {
                     Label("Show result JSON", systemImage: "finder")
                 }
 
+#if DEBUG
                 if !result.pcmURLs.isEmpty {
                     Button {
                         revealInFinder(result.pcmURLs)
@@ -943,6 +956,7 @@ private struct CallResultContent: View {
                         Label("Show PCM files", systemImage: "finder")
                     }
                 }
+#endif
             }
         }
     }

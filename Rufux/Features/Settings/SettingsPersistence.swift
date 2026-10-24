@@ -59,7 +59,13 @@ struct SettingsIssue: Identifiable, Equatable {
     }
 }
 
-struct KeychainStore: @unchecked Sendable {
+nonisolated protocol KeychainStoring: Sendable {
+    func apiKey() throws -> String?
+    func saveAPIKey(_ key: String) throws
+    func removeAPIKey() throws
+}
+
+struct KeychainStore: KeychainStoring, @unchecked Sendable {
     private let service: String
     private let account = "openai-api-key"
 
@@ -140,33 +146,65 @@ final class SettingsStore {
     private(set) var hasStoredAPIKey = false
     private(set) var isSavingAPIKey = false
     var apiKeyDraft = ""
+#if DEBUG
     var isPCMOutputEnabled: Bool {
         didSet { defaults.set(isPCMOutputEnabled, forKey: Keys.isPCMOutputEnabled) }
     }
+#else
+    var isPCMOutputEnabled: Bool { false }
+#endif
     private(set) var resultOutputDirectory: URL?
+#if DEBUG
     private(set) var pcmOutputDirectory: URL?
+#else
+    var pcmOutputDirectory: URL? { nil }
+#endif
     private(set) var preferredHFPDeviceAddress: String?
     private(set) var preferredAudioDeviceUID: String?
     var issue: SettingsIssue?
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let keychain: KeychainStore
+    @ObservationIgnored private let keychain: any KeychainStoring
     @ObservationIgnored private var isLoading = false
     @ObservationIgnored private var resultAccessWasStarted = false
+#if DEBUG
     @ObservationIgnored private var pcmAccessWasStarted = false
+#endif
 
     init(
         defaults: UserDefaults = .standard,
-        keychain: KeychainStore = KeychainStore()
+        keychain: any KeychainStoring = KeychainStore()
     ) {
         self.defaults = defaults
         self.keychain = keychain
+#if DEBUG
         isPCMOutputEnabled = defaults.object(forKey: Keys.isPCMOutputEnabled) == nil
-            ? true
+            ? false
             : defaults.bool(forKey: Keys.isPCMOutputEnabled)
+#endif
         preferredHFPDeviceAddress = defaults.string(forKey: Keys.preferredHFPDeviceAddress)
         preferredAudioDeviceUID = defaults.string(forKey: Keys.preferredAudioDeviceUID)
     }
+
+#if DEBUG
+    static func uiTesting(reset: Bool) -> SettingsStore {
+        let suiteName = "RufuxUITests"
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        if reset {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = SettingsStore(defaults: defaults, keychain: UITestingKeychainStore())
+        store.apiKeyDraft = "ui-test-key"
+        store.hasStoredAPIKey = true
+        store.isLoaded = true
+        store.resultOutputDirectory = FileManager.default.temporaryDirectory
+        store.pcmOutputDirectory = FileManager.default.temporaryDirectory
+        store.preferredHFPDeviceAddress = "00:00:00:00:00:01"
+        store.preferredAudioDeviceUID = "prototype.usb-audio"
+        return store
+    }
+#endif
 
     var appSettings: AppSettings {
         AppSettings(
@@ -202,10 +240,12 @@ final class SettingsStore {
             bookmarkKey: Keys.resultOutputBookmark,
             accessWasStarted: &resultAccessWasStarted
         ) ?? prepareDefaultDirectory(named: "Results")
+#if DEBUG
         pcmOutputDirectory = restoreDirectory(
             bookmarkKey: Keys.pcmOutputBookmark,
             accessWasStarted: &pcmAccessWasStarted
         ) ?? prepareDefaultDirectory(named: "Recordings")
+#endif
     }
 
     func saveAPIKey() async {
@@ -269,6 +309,7 @@ final class SettingsStore {
         )
     }
 
+#if DEBUG
     func choosePCMDirectory() async {
         guard let url = await DirectoryPicker.choose(
             title: "Choose Recording Folder",
@@ -282,6 +323,7 @@ final class SettingsStore {
             errorTitle: "Recording folder unavailable"
         )
     }
+#endif
 
     func setPreferredHFPDeviceAddress(_ address: String?) {
         preferredHFPDeviceAddress = normalizedPreference(address)
@@ -415,3 +457,11 @@ final class SettingsStore {
         static let preferredAudioDeviceUID = "settings.preferredAudioDeviceUID"
     }
 }
+
+#if DEBUG
+private struct UITestingKeychainStore: KeychainStoring {
+    func apiKey() -> String? { "ui-test-key" }
+    func saveAPIKey(_ key: String) {}
+    func removeAPIKey() {}
+}
+#endif
